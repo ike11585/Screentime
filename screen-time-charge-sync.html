@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Screen Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" />
+<style>html,body{margin:0;padding:0;background:#E7ECF5;}</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.10/babel.min.js"></script>
+<!-- Firebase (compat build so no bundler is needed) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+/* ================================================================== */
+/*  STEP 1 — paste your Firebase project values between the quotes.    */
+/*  (Setup steps are in the chat message that came with this file.)    */
+/*  Until you do, the app runs in local-only mode on each device.      */
+/* ================================================================== */
+const firebaseConfig = {
+    apiKey: "AIzaSyAYqyRx8id8c74XuuAU04-Q9sUrmhZQx0Y",
+    authDomain: "screentime-7bb41.firebaseapp.com",
+    projectId: "screentime-7bb41",
+    databaseURL: "https://screentime-7bb41-default-rtdb.firebaseio.com/",
+    storageBucket: "screentime-7bb41.firebasestorage.app",
+    messagingSenderId: "474924623788",
+    appId: "1:474924623788:web:46c8dd1c65d13ef1983c09",
+    measurementId: "G-THDPBSZ0WC"
+};
+// Any private word. Keep it the same on every device; change it to start fresh.
+const FAMILY_CODE = "eichelberger";
+/* ================================================================== */
+
+const SYNC_ENABLED =
+  typeof firebase !== "undefined" &&
+  firebaseConfig.apiKey && firebaseConfig.apiKey.indexOf("PASTE") === -1 &&
+  firebaseConfig.databaseURL && firebaseConfig.databaseURL.indexOf("PASTE") === -1;
+
+/* ------------------------------------------------------------------ */
+/*  Storage layer: cloud (when configured) with a localStorage mirror  */
+/*  so the app loads instantly and still works offline / unconfigured. */
+/* ------------------------------------------------------------------ */
+const mem = {};
+let cache = null;            // mirror of the cloud family node when synced
+let familyRef = null;
+let notifyRemote = () => {}; // App wires this to a re-render
+
+const local = {
+  get(k) {
+    try { const v = localStorage.getItem(k); if (v != null) return JSON.parse(v); } catch (e) {}
+    return k in mem ? mem[k] : null;
+  },
+  set(k, v) {
+    mem[k] = v;
+    try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {}
+  },
+};
+
+const store = {
+  getJSON(key) {
+    if (cache && Object.prototype.hasOwnProperty.call(cache, key)) return cache[key];
+    return local.get(key);
+  },
+  setJSON(key, val) {
+    local.set(key, val);                       // always keep a local copy
+    if (familyRef) { try { familyRef.child(key).set(val); } catch (e) {} }
+  },
+};
+
+function initSync(onStatus) {
+  if (!SYNC_ENABLED) { onStatus("off"); return; }
+  try {
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.database();
+    onStatus("connecting");
+    auth.signInAnonymously().catch(() => onStatus("error"));
+    auth.onAuthStateChanged((user) => {
+      if (!user) return;
+      familyRef = db.ref("families/" + FAMILY_CODE);
+      familyRef.on(
+        "value",
+        (snap) => {
+          cache = snap.val() || {};
+          // First-time seed: if the cloud has no config yet, push this device's.
+          if (!cache.config) {
+            const lc = local.get("config");
+            if (lc) { try { familyRef.child("config").set(lc); } catch (e) {} }
+          }
+          notifyRemote();
+        },
+        () => onStatus("error")
+      );
+      db.ref(".info/connected").on("value", (s) => onStatus(s.val() ? "on" : "connecting"));
+    });
+  } catch (e) {
+    onStatus("error");
+  }
+}
+
+/* ------------------------------------------------------------------ */
+const DEFAULT_CONFIG = {
+  kids: [
+    { id: "k1", name: "Kid 1", accent: "#12B3A6" },
+    { id: "k2", name: "Kid 2", accent: "#F5A524" },
+  ],
+  caps: { school: 90, weekend: 120 },
+  banking: false,
+  responsibilities: [
+    { id: "r1", label: "Bed made" },
+    { id: "r2", label: "Dishes cleared" },
+    { id: "r3", label: "Homework done" },
+    { id: "r4", label: "Room floor clear" },
+  ],
+  chores: [
+    { id: "c1", label: "Load/unload dishwasher", min: 15 },
+    { id: "c2", label: "Fold & put away laundry", min: 20 },
+    { id: "c3", label: "Vacuum a room", min: 15 },
+    { id: "c4", label: "Clean a bathroom", min: 25 },
+    { id: "c5", label: "Trash & recycling out", min: 10 },
+    { id: "c6", label: "Wipe counters / table", min: 10 },
+    { id: "c7", label: "Feed / walk pet", min: 10 },
+    { id: "c8", label: "Yard work (30 min)", min: 30 },
+  ],
+};
+
+const ACCENTS = ["#12B3A6", "#F5A524", "#6C6BF5", "#EC5A8D", "#3B9BF0", "#5FB53A"];
+const pad = (n) => String(n).padStart(2, "0");
+const todayKey = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+const isWeekend = () => {
+  const g = new Date().getDay();
+  return g === 0 || g === 6;
+};
+const fmt = (m) => {
+  m = Math.max(0, Math.round(m));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
+};
+const uid = () => Math.random().toString(36).slice(2, 8);
+const SYNC_LABEL = { off: "This device", connecting: "Connecting…", on: "Synced", error: "Sync error" };
+
+/* ------------------------------------------------------------------ */
+function App() {
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [activeKid, setActiveKid] = useState("k1");
+  const [day, setDay] = useState({ respDone: {}, entries: [] });
+  const [bank, setBank] = useState(0);
+  const [ready, setReady] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [floats, setFloats] = useState([]);
+  const [customSpend, setCustomSpend] = useState("");
+  const [syncState, setSyncState] = useState(SYNC_ENABLED ? "connecting" : "off");
+  const [tick, setTick] = useState(0);
+  const floatId = useRef(0);
+  const activeKidRef = useRef("k1");
+
+  /* mount: start sync + first local load */
+  useEffect(() => {
+    notifyRemote = () => setTick((t) => t + 1);
+    initSync(setSyncState);
+    const cfg = store.getJSON("config") || DEFAULT_CONFIG;
+    setConfig(cfg);
+    const kid = cfg.kids[0].id;
+    activeKidRef.current = kid;
+    setActiveKid(kid);
+    loadKid(kid);
+    setReady(true);
+    return () => { notifyRemote = () => {}; };
+  }, []);
+
+  /* a cloud change arrived from another device: refresh what we show */
+  useEffect(() => {
+    if (!ready) return;
+    const cfg = store.getJSON("config");
+    if (cfg) setConfig(cfg);
+    loadKid(activeKidRef.current);
+  }, [tick]);
+
+  function loadKid(kidId) {
+    const raw = store.getJSON(`day:${kidId}:${todayKey()}`) || {};
+    setDay({ respDone: raw.respDone || {}, entries: raw.entries || [] });
+    const b = store.getJSON(`bank:${kidId}`);
+    setBank(typeof b === "number" ? b : 0);
+  }
+
+  function saveConfig(c) { setConfig(c); store.setJSON("config", c); }
+  function saveDay(d) { setDay(d); store.setJSON(`day:${activeKid}:${todayKey()}`, d); }
+  function saveBank(b) { setBank(b); store.setJSON(`bank:${activeKid}`, b); }
+
+  function switchKid(id) {
+    activeKidRef.current = id;
+    setActiveKid(id);
+    loadKid(id);
+  }
+
+  const kid = config.kids.find((k) => k.id === activeKid) || config.kids[0];
+  const cap = isWeekend() ? config.caps.weekend : config.caps.school;
+  const earnedToday = day.entries.filter((e) => e.type === "earn").reduce((s, e) => s + e.min, 0);
+  const spentToday = day.entries.filter((e) => e.type === "spend").reduce((s, e) => s + e.min, 0);
+  const allRespDone =
+    config.responsibilities.length > 0 &&
+    config.responsibilities.every((r) => day.respDone[r.id]);
+  const locked = !allRespDone;
+
+  let remaining, capUsedLabel;
+  if (config.banking) {
+    remaining = Math.max(0, Math.min(cap - spentToday, bank));
+    capUsedLabel = `Bank: ${fmt(bank)}`;
+  } else {
+    const pool = Math.min(earnedToday, cap);
+    remaining = Math.max(0, pool - spentToday);
+    capUsedLabel = earnedToday > cap ? `Earned ${fmt(earnedToday)} (capped)` : `Earned ${fmt(earnedToday)}`;
+  }
+  const fillPct = cap > 0 ? Math.min(100, (remaining / cap) * 100) : 0;
+
+  function popFloat(text, positive) {
+    const id = ++floatId.current;
+    setFloats((f) => [...f, { id, text, positive }]);
+    setTimeout(() => setFloats((f) => f.filter((x) => x.id !== id)), 950);
+  }
+
+  function addEarn(chore) {
+    const entry = { id: uid(), type: "earn", min: chore.min, label: chore.label, ts: Date.now() };
+    saveDay({ ...day, entries: [...day.entries, entry] });
+    if (config.banking) saveBank(bank + chore.min);
+    popFloat(`+${chore.min}m`, true);
+  }
+
+  function spend(min) {
+    if (locked || min <= 0 || min > remaining) return;
+    const entry = { id: uid(), type: "spend", min, label: "Screen time", ts: Date.now() };
+    saveDay({ ...day, entries: [...day.entries, entry] });
+    if (config.banking) saveBank(bank - min);
+    popFloat(`\u2212${min}m`, false);
+    setCustomSpend("");
+  }
+
+  function toggleResp(id) {
+    saveDay({ ...day, respDone: { ...day.respDone, [id]: !day.respDone[id] } });
+  }
+
+  function undoLast() {
+    if (day.entries.length === 0) return;
+    const last = day.entries[day.entries.length - 1];
+    saveDay({ ...day, entries: day.entries.slice(0, -1) });
+    if (config.banking) {
+      if (last.type === "earn") saveBank(bank - last.min);
+      else saveBank(bank + last.min);
+    }
+  }
+
+  const dayLabel = isWeekend() ? "weekend" : "school day";
+  const recent = [...day.entries].reverse().slice(0, 8);
+
+  if (!ready) {
+    return (
+      <div className="ct-root">
+        <style>{CSS}</style>
+        <div className="ct-loading">Loading…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ct-root" style={{ "--accent": kid.accent }}>
+      <style>{CSS}</style>
+
+      <header className="ct-head">
+        <div className="ct-brand">
+          <span className="ct-bolt" aria-hidden>⚡</span>
+          <span>Screen Time</span>
+        </div>
+        <div className="ct-headright">
+          <span className={"ct-sync " + syncState}>{SYNC_LABEL[syncState]}</span>
+          <button className="ct-gear" onClick={() => setSetupOpen(true)}>Set up</button>
+        </div>
+      </header>
+
+      <div className="ct-kids">
+        {config.kids.map((k) => (
+          <button
+            key={k.id}
+            className={"ct-kid" + (k.id === activeKid ? " on" : "")}
+            style={
+              k.id === activeKid
+                ? { background: k.accent, borderColor: k.accent }
+                : { color: k.accent, borderColor: k.accent }
+            }
+            onClick={() => switchKid(k.id)}
+          >
+            {k.name}
+          </button>
+        ))}
+      </div>
+
+      <div className={"ct-meter-card" + (locked ? " locked" : "")}>
+        <div className="ct-floats">
+          {floats.map((f) => (
+            <span key={f.id} className={"ct-float " + (f.positive ? "pos" : "neg")}>{f.text}</span>
+          ))}
+        </div>
+        <div className="ct-remain">{fmt(remaining)}</div>
+        <div className="ct-remain-sub">minutes left today</div>
+        <div className="ct-track">
+          <div className="ct-fill" style={{ width: fillPct + "%" }} />
+        </div>
+        <div className="ct-meter-foot">
+          <span>{capUsedLabel}</span>
+          <span>Cap {fmt(cap)} · {dayLabel}</span>
+        </div>
+        {locked && <div className="ct-lockbar">🔒 Finish today's must-dos to use your time</div>}
+      </div>
+
+      <section className="ct-card">
+        <h2 className="ct-h2">Today's must-dos <span className="ct-hint">unlocks your time</span></h2>
+        <div className="ct-resp">
+          {config.responsibilities.map((r) => (
+            <button
+              key={r.id}
+              className={"ct-check" + (day.respDone[r.id] ? " done" : "")}
+              onClick={() => toggleResp(r.id)}
+            >
+              <span className="ct-box">{day.respDone[r.id] ? "✓" : ""}</span>
+              {r.label}
+            </button>
+          ))}
+          {config.responsibilities.length === 0 && (
+            <p className="ct-empty">No must-dos set. Add some in Set up.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="ct-card">
+        <h2 className="ct-h2">Earn more time</h2>
+        <div className="ct-chores">
+          {config.chores.map((c) => (
+            <button key={c.id} className="ct-chore" onClick={() => addEarn(c)}>
+              <span className="ct-chore-label">{c.label}</span>
+              <span className="ct-chore-min">+{c.min}m</span>
+            </button>
+          ))}
+          {config.chores.length === 0 && (
+            <p className="ct-empty">No chores set. Add some in Set up.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="ct-card">
+        <h2 className="ct-h2">Use time</h2>
+        <div className="ct-spend">
+          {[15, 30, 45, 60].map((n) => (
+            <button
+              key={n}
+              className="ct-spendbtn"
+              disabled={locked || n > remaining}
+              onClick={() => spend(n)}
+            >
+              {n}m
+            </button>
+          ))}
+        </div>
+        <div className="ct-custom">
+          <input
+            className="ct-input"
+            type="number"
+            min="1"
+            inputMode="numeric"
+            placeholder="Custom"
+            value={customSpend}
+            onChange={(e) => setCustomSpend(e.target.value)}
+          />
+          <button
+            className="ct-usebtn"
+            disabled={
+              locked ||
+              !customSpend ||
+              parseInt(customSpend, 10) <= 0 ||
+              parseInt(customSpend, 10) > remaining
+            }
+            onClick={() => spend(parseInt(customSpend, 10))}
+          >
+            Use it
+          </button>
+        </div>
+      </section>
+
+      <section className="ct-card">
+        <div className="ct-hist-head">
+          <h2 className="ct-h2">Today's log</h2>
+          {day.entries.length > 0 && (
+            <button className="ct-undo" onClick={undoLast}>↩ Undo</button>
+          )}
+        </div>
+        {recent.length === 0 ? (
+          <p className="ct-empty">Nothing yet today. Do a chore to charge up.</p>
+        ) : (
+          <ul className="ct-log">
+            {recent.map((e) => (
+              <li key={e.id} className="ct-logrow">
+                <span className="ct-logdot" data-t={e.type} />
+                <span className="ct-loglabel">{e.label}</span>
+                <span className={"ct-logmin " + e.type}>
+                  {e.type === "earn" ? "+" : "\u2212"}{e.min}m
+                </span>
+                <span className="ct-logtime">
+                  {new Date(e.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {setupOpen && (
+        <Setup config={config} onSave={saveConfig} onClose={() => setSetupOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+function Setup({ config, onSave, onClose }) {
+  const [c, setC] = useState(JSON.parse(JSON.stringify(config)));
+  const [newResp, setNewResp] = useState("");
+  const [newChore, setNewChore] = useState("");
+  const [newMin, setNewMin] = useState("");
+
+  const up = (patch) => setC((prev) => ({ ...prev, ...patch }));
+
+  function setKid(i, patch) {
+    const kids = c.kids.map((k, idx) => (idx === i ? { ...k, ...patch } : k));
+    up({ kids });
+  }
+  function addResp() {
+    if (!newResp.trim()) return;
+    up({ responsibilities: [...c.responsibilities, { id: uid(), label: newResp.trim() }] });
+    setNewResp("");
+  }
+  function delResp(id) { up({ responsibilities: c.responsibilities.filter((r) => r.id !== id) }); }
+  function addChore() {
+    const m = parseInt(newMin, 10);
+    if (!newChore.trim() || !m || m <= 0) return;
+    up({ chores: [...c.chores, { id: uid(), label: newChore.trim(), min: m }] });
+    setNewChore("");
+    setNewMin("");
+  }
+  function delChore(id) { up({ chores: c.chores.filter((x) => x.id !== id) }); }
+  function save() { onSave(c); onClose(); }
+
+  return (
+    <div className="ct-modal" onClick={onClose}>
+      <div className="ct-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="ct-sheet-head">
+          <h2 className="ct-h2">Set up</h2>
+          <button className="ct-x" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="ct-sheet-body">
+          <h3 className="ct-h3">Names & colors</h3>
+          {c.kids.map((k, i) => (
+            <div key={k.id} className="ct-kidedit">
+              <input
+                className="ct-input full"
+                value={k.name}
+                onChange={(e) => setKid(i, { name: e.target.value })}
+              />
+              <div className="ct-swatches">
+                {ACCENTS.map((a) => (
+                  <button
+                    key={a}
+                    className={"ct-swatch" + (k.accent === a ? " on" : "")}
+                    style={{ background: a }}
+                    onClick={() => setKid(i, { accent: a })}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <h3 className="ct-h3">Daily caps</h3>
+          <div className="ct-caprow">
+            <label className="ct-caplabel">
+              School day
+              <input
+                className="ct-input"
+                type="number"
+                value={c.caps.school}
+                onChange={(e) => up({ caps: { ...c.caps, school: parseInt(e.target.value, 10) || 0 } })}
+              />
+              <span className="ct-unit">min</span>
+            </label>
+            <label className="ct-caplabel">
+              Weekend
+              <input
+                className="ct-input"
+                type="number"
+                value={c.caps.weekend}
+                onChange={(e) => up({ caps: { ...c.caps, weekend: parseInt(e.target.value, 10) || 0 } })}
+              />
+              <span className="ct-unit">min</span>
+            </label>
+          </div>
+
+          <h3 className="ct-h3">Saving mode</h3>
+          <button
+            className={"ct-toggle" + (c.banking ? " on" : "")}
+            onClick={() => up({ banking: !c.banking })}
+          >
+            <span className="ct-knob" />
+            <span className="ct-toggle-text">
+              {c.banking ? "Banking on — minutes carry over" : "Use-it-or-lose-it (resets daily)"}
+            </span>
+          </button>
+          <p className="ct-note">
+            With banking on, earned minutes build up over time. The daily cap still limits how much
+            can be used in one day.
+          </p>
+
+          <h3 className="ct-h3">Must-dos (unlock spending)</h3>
+          {c.responsibilities.map((r) => (
+            <div key={r.id} className="ct-editrow">
+              <span>{r.label}</span>
+              <button className="ct-del" onClick={() => delResp(r.id)}>✕</button>
+            </div>
+          ))}
+          <div className="ct-addrow">
+            <input
+              className="ct-input full"
+              placeholder="Add a must-do"
+              value={newResp}
+              onChange={(e) => setNewResp(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addResp()}
+            />
+            <button className="ct-add" onClick={addResp}>Add</button>
+          </div>
+
+          <h3 className="ct-h3">Earning chores</h3>
+          {c.chores.map((x) => (
+            <div key={x.id} className="ct-editrow">
+              <span>{x.label}</span>
+              <span className="ct-editmin">+{x.min}m</span>
+              <button className="ct-del" onClick={() => delChore(x.id)}>✕</button>
+            </div>
+          ))}
+          <div className="ct-addrow">
+            <input
+              className="ct-input full"
+              placeholder="Add a chore"
+              value={newChore}
+              onChange={(e) => setNewChore(e.target.value)}
+            />
+            <input
+              className="ct-input mins"
+              type="number"
+              placeholder="min"
+              value={newMin}
+              onChange={(e) => setNewMin(e.target.value)}
+            />
+            <button className="ct-add" onClick={addChore}>Add</button>
+          </div>
+        </div>
+
+        <div className="ct-sheet-foot">
+          <button className="ct-save" onClick={save}>Save changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+const CSS = `
+.ct-root{
+  --bg1:#EEF1F8; --bg2:#E4E9F3; --card:#FFFFFF; --ink:#1E2233;
+  --muted:#7C8398; --line:#E7EAF2; --accent:#12B3A6;
+  font-family:Inter,system-ui,-apple-system,sans-serif;
+  color:var(--ink);
+  background:linear-gradient(160deg,var(--bg1),var(--bg2));
+  min-height:100vh; padding:18px 16px 40px; box-sizing:border-box;
+  max-width:520px; margin:0 auto;
+}
+.ct-root *{box-sizing:border-box;}
+.ct-loading{padding:60px 0;text-align:center;color:var(--muted);}
+
+.ct-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}
+.ct-brand{font-family:Fredoka,sans-serif;font-weight:600;font-size:22px;display:flex;align-items:center;gap:7px;}
+.ct-bolt{filter:drop-shadow(0 2px 4px rgba(0,0,0,.12));}
+.ct-headright{display:flex;align-items:center;gap:10px;}
+.ct-sync{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;white-space:nowrap;}
+.ct-sync::before{content:"";width:8px;height:8px;border-radius:50%;background:#C3C9D6;}
+.ct-sync.on::before{background:#3BB273;}
+.ct-sync.connecting::before{background:#F5A524;}
+.ct-sync.error::before{background:#E0567E;}
+.ct-gear{background:#fff;border:1px solid var(--line);border-radius:999px;padding:8px 16px;font-size:14px;font-weight:500;cursor:pointer;color:var(--ink);}
+.ct-gear:hover{background:#F5F7FC;}
+
+.ct-kids{display:flex;gap:10px;margin-bottom:16px;}
+.ct-kid{flex:1;padding:12px;border-radius:16px;border:2px solid;background:#fff;font-family:Fredoka,sans-serif;font-weight:600;font-size:17px;cursor:pointer;transition:transform .1s;}
+.ct-kid.on{color:#fff;}
+.ct-kid:active{transform:scale(.97);}
+
+.ct-meter-card{position:relative;background:var(--card);border-radius:24px;padding:26px 24px 20px;box-shadow:0 8px 26px rgba(30,40,80,.08);margin-bottom:16px;overflow:hidden;text-align:center;}
+.ct-meter-card.locked .ct-fill{filter:grayscale(.7) opacity(.55);}
+.ct-remain{font-family:Fredoka,sans-serif;font-weight:700;font-size:52px;line-height:1;color:var(--accent);}
+.ct-remain-sub{color:var(--muted);font-size:14px;margin-top:4px;margin-bottom:18px;}
+.ct-track{height:26px;background:#EDEFF6;border-radius:999px;overflow:hidden;box-shadow:inset 0 1px 3px rgba(0,0,0,.07);}
+.ct-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),color-mix(in srgb,var(--accent) 60%,#fff));transition:width .6s cubic-bezier(.22,.9,.3,1);min-width:6px;}
+.ct-meter-foot{display:flex;justify-content:space-between;margin-top:12px;font-size:12.5px;color:var(--muted);}
+.ct-lockbar{margin-top:14px;background:#FFF4E6;color:#9A5B00;border-radius:12px;padding:9px 12px;font-size:13px;font-weight:500;}
+
+.ct-floats{position:absolute;top:20px;left:0;right:0;display:flex;justify-content:center;pointer-events:none;height:0;}
+.ct-float{position:absolute;font-family:Fredoka,sans-serif;font-weight:700;font-size:26px;animation:ctfloat .95s ease-out forwards;}
+.ct-float.pos{color:var(--accent);}
+.ct-float.neg{color:#E0567E;}
+@keyframes ctfloat{0%{transform:translateY(0);opacity:0;}20%{opacity:1;}100%{transform:translateY(-46px);opacity:0;}}
+
+.ct-card{background:var(--card);border-radius:20px;padding:18px;box-shadow:0 4px 16px rgba(30,40,80,.05);margin-bottom:14px;}
+.ct-h2{font-family:Fredoka,sans-serif;font-weight:600;font-size:17px;margin:0 0 12px;display:flex;align-items:center;gap:8px;}
+.ct-hint{font-family:Inter,sans-serif;font-weight:400;font-size:12px;color:var(--muted);background:#F1F3FA;padding:3px 9px;border-radius:999px;}
+.ct-empty{color:var(--muted);font-size:14px;margin:2px 0;}
+
+.ct-resp{display:flex;flex-direction:column;gap:8px;}
+.ct-check{display:flex;align-items:center;gap:11px;background:#F7F8FC;border:1px solid var(--line);border-radius:12px;padding:11px 13px;font-size:15px;cursor:pointer;text-align:left;color:var(--ink);transition:background .12s;}
+.ct-check:hover{background:#F1F3FA;}
+.ct-check.done{background:color-mix(in srgb,var(--accent) 12%,#fff);border-color:color-mix(in srgb,var(--accent) 35%,#fff);}
+.ct-box{width:24px;height:24px;border-radius:8px;border:2px solid #CBD2E0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff;flex-shrink:0;}
+.ct-check.done .ct-box{background:var(--accent);border-color:var(--accent);}
+
+.ct-chores{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
+.ct-chore{display:flex;flex-direction:column;align-items:flex-start;gap:6px;background:#F7F8FC;border:1px solid var(--line);border-radius:14px;padding:12px;cursor:pointer;text-align:left;transition:transform .1s,background .12s;}
+.ct-chore:hover{background:#F1F3FA;}
+.ct-chore:active{transform:scale(.96);}
+.ct-chore-label{font-size:13.5px;line-height:1.25;color:var(--ink);}
+.ct-chore-min{font-family:Fredoka,sans-serif;font-weight:600;font-size:15px;color:var(--accent);}
+
+.ct-spend{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:10px;}
+.ct-spendbtn{padding:14px 0;border-radius:14px;border:none;background:var(--accent);color:#fff;font-family:Fredoka,sans-serif;font-weight:600;font-size:16px;cursor:pointer;transition:transform .1s,opacity .12s;}
+.ct-spendbtn:active{transform:scale(.95);}
+.ct-spendbtn:disabled{background:#DDE1EC;color:#A5ADBF;cursor:not-allowed;}
+.ct-custom{display:flex;gap:9px;}
+.ct-input{border:1px solid var(--line);border-radius:12px;padding:11px 13px;font-size:15px;font-family:Inter,sans-serif;width:100%;color:var(--ink);background:#fff;}
+.ct-input:focus{outline:2px solid var(--accent);outline-offset:1px;}
+.ct-usebtn{white-space:nowrap;padding:0 20px;border-radius:12px;border:none;background:#2B3040;color:#fff;font-weight:600;font-size:15px;cursor:pointer;}
+.ct-usebtn:disabled{background:#DDE1EC;color:#A5ADBF;cursor:not-allowed;}
+
+.ct-hist-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.ct-hist-head .ct-h2{margin:0;}
+.ct-undo{background:none;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer;color:var(--muted);}
+.ct-undo:hover{background:#F5F7FC;color:var(--ink);}
+.ct-log{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;}
+.ct-logrow{display:flex;align-items:center;gap:10px;padding:8px 2px;border-bottom:1px solid #F1F3FA;font-size:14px;}
+.ct-logrow:last-child{border-bottom:none;}
+.ct-logdot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.ct-logdot[data-t="earn"]{background:var(--accent);}
+.ct-logdot[data-t="spend"]{background:#E0567E;}
+.ct-loglabel{flex:1;}
+.ct-logmin{font-family:Fredoka,sans-serif;font-weight:600;}
+.ct-logmin.earn{color:var(--accent);}
+.ct-logmin.spend{color:#E0567E;}
+.ct-logtime{color:var(--muted);font-size:12px;width:64px;text-align:right;}
+
+.ct-modal{position:fixed;inset:0;background:rgba(20,26,45,.42);display:flex;align-items:flex-end;justify-content:center;z-index:50;padding:0;}
+.ct-sheet{background:#fff;width:100%;max-width:520px;max-height:92vh;border-radius:24px 24px 0 0;display:flex;flex-direction:column;animation:ctrise .25s ease-out;}
+@keyframes ctrise{from{transform:translateY(30px);opacity:.6;}to{transform:translateY(0);opacity:1;}}
+.ct-sheet-head{display:flex;justify-content:space-between;align-items:center;padding:18px 20px;border-bottom:1px solid var(--line);}
+.ct-sheet-head .ct-h2{margin:0;}
+.ct-x{background:#F1F3FA;border:none;width:34px;height:34px;border-radius:50%;font-size:15px;cursor:pointer;color:var(--ink);}
+.ct-sheet-body{padding:8px 20px 20px;overflow-y:auto;}
+.ct-h3{font-family:Fredoka,sans-serif;font-weight:600;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:22px 0 10px;}
+.ct-kidedit{margin-bottom:14px;}
+.ct-input.full{width:100%;}
+.ct-input.mins{width:74px;flex-shrink:0;}
+.ct-swatches{display:flex;gap:8px;margin-top:9px;}
+.ct-swatch{width:30px;height:30px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 1px var(--line);cursor:pointer;}
+.ct-swatch.on{box-shadow:0 0 0 2px var(--ink);}
+.ct-caprow{display:flex;gap:12px;}
+.ct-caplabel{flex:1;display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted);position:relative;}
+.ct-caplabel .ct-input{width:100%;}
+.ct-unit{position:absolute;right:12px;bottom:12px;font-size:13px;color:var(--muted);}
+.ct-toggle{display:flex;align-items:center;gap:12px;width:100%;background:#F7F8FC;border:1px solid var(--line);border-radius:14px;padding:12px 14px;cursor:pointer;text-align:left;}
+.ct-knob{width:44px;height:26px;border-radius:999px;background:#CBD2E0;position:relative;flex-shrink:0;transition:background .15s;}
+.ct-knob::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .15s;}
+.ct-toggle.on .ct-knob{background:var(--accent,#12B3A6);}
+.ct-toggle.on .ct-knob::after{transform:translateX(18px);}
+.ct-toggle-text{font-size:14px;font-weight:500;color:var(--ink);}
+.ct-note{font-size:12.5px;color:var(--muted);line-height:1.45;margin:8px 2px 0;}
+.ct-editrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #F1F3FA;font-size:14px;}
+.ct-editrow span:first-child{flex:1;}
+.ct-editmin{font-family:Fredoka,sans-serif;font-weight:600;color:var(--muted);}
+.ct-del{background:none;border:none;color:#C3496B;font-size:14px;cursor:pointer;padding:2px 6px;}
+.ct-addrow{display:flex;gap:8px;margin-top:10px;}
+.ct-add{white-space:nowrap;padding:0 16px;border-radius:12px;border:none;background:#2B3040;color:#fff;font-weight:600;font-size:14px;cursor:pointer;}
+.ct-sheet-foot{padding:14px 20px;border-top:1px solid var(--line);}
+.ct-save{width:100%;padding:14px;border-radius:14px;border:none;background:var(--accent,#12B3A6);color:#fff;font-family:Fredoka,sans-serif;font-weight:600;font-size:16px;cursor:pointer;}
+
+@media (prefers-reduced-motion: reduce){
+  .ct-fill,.ct-kid,.ct-chore,.ct-spendbtn,.ct-sheet{transition:none;animation:none;}
+  .ct-float{animation-duration:.4s;}
+}
+`;
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
