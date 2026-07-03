@@ -19,6 +19,9 @@
 <div id="root"></div>
 
 <script type="text/babel" data-presets="react">
+    // The "Set up" button is hidden unless the URL ends with #<this word>.
+    // Change it to any private word only you know.
+    const ADMIN_CODE = "open-sesame";
 const { useState, useEffect, useRef } = React;
 
 /* ================================================================== */
@@ -165,8 +168,17 @@ function App() {
   const [customSpend, setCustomSpend] = useState("");
   const [syncState, setSyncState] = useState(SYNC_ENABLED ? "connecting" : "off");
   const [tick, setTick] = useState(0);
-  const floatId = useRef(0);
-  const activeKidRef = useRef("k1");
+    const [admin, setAdmin] = useState(false);
+    const floatId = useRef(0);
+    const activeKidRef = useRef("k1");
+
+    /* the "Set up" button only appears at the secret URL (…#<ADMIN_CODE>) */
+    useEffect(() => {
+        const check = () => setAdmin(window.location.hash.replace(/^#/, "") === ADMIN_CODE);
+        check();
+        window.addEventListener("hashchange", check);
+        return () => window.removeEventListener("hashchange", check);
+    }, []);
 
   /* mount: start sync + first local load */
   useEffect(() => {
@@ -286,8 +298,9 @@ function App() {
         </div>
         <div className="ct-headright">
           <span className={"ct-sync " + syncState}>{SYNC_LABEL[syncState]}</span>
-          <button className="ct-gear" onClick={() => setSetupOpen(true)}>Set up</button>
-        </div>
+            {admin && (
+                <button className="ct-gear" onClick={() => setSetupOpen(true)}>Set up</button>
+            )}        </div>
       </header>
 
       <div className="ct-kids">
