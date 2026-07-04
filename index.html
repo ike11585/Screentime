@@ -154,6 +154,34 @@ const fmt = (m) => {
   return r ? `${h}h ${r}m` : `${h}h`;
 };
 const uid = () => Math.random().toString(36).slice(2, 8);
+
+    /* summarize every stored day for one kid (earned vs used) */
+    function gatherHistory(kidId) {
+        const prefix = "day:" + kidId + ":";
+        const days = {};
+        const add = (k, v) => {
+            if (k && k.indexOf(prefix) === 0 && !(k.slice(prefix.length) in days)) {
+                days[k.slice(prefix.length)] = v;
+            }
+        };
+        if (cache) Object.keys(cache).forEach((k) => add(k, cache[k]));
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.indexOf(prefix) === 0) {
+                    try { add(k, JSON.parse(localStorage.getItem(k))); } catch (e) {}
+                }
+            }
+        } catch (e) {}
+        Object.keys(mem).forEach((k) => add(k, mem[k]));
+        return Object.keys(days).sort().map((date) => {
+            const entries = (days[date] && days[date].entries) || [];
+            const earned = entries.filter((e) => e.type === "earn").reduce((s, e) => s + e.min, 0);
+            const used = entries.filter((e) => e.type === "spend").reduce((s, e) => s + e.min, 0);
+            return { date, earned, used };
+        });
+    }
+
 const SYNC_LABEL = { off: "This device", connecting: "Connecting…", on: "Synced", error: "Sync error" };
 
 /* ------------------------------------------------------------------ */
@@ -164,6 +192,7 @@ function App() {
   const [bank, setBank] = useState(0);
   const [ready, setReady] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [floats, setFloats] = useState([]);
   const [customSpend, setCustomSpend] = useState("");
   const [syncState, setSyncState] = useState(SYNC_ENABLED ? "connecting" : "off");
@@ -412,12 +441,15 @@ function App() {
       </section>
 
       <section className="ct-card">
-        <div className="ct-hist-head">
-          <h2 className="ct-h2">Today's log</h2>
-          {day.entries.length > 0 && (
-            <button className="ct-undo" onClick={undoLast}>↩ Undo</button>
-          )}
-        </div>
+          <div className="ct-hist-head">
+              <h2 className="ct-h2">Today's log</h2>
+              <div className="ct-hist-actions">
+                  {day.entries.length > 0 && (
+                      <button className="ct-undo" onClick={undoLast}>↩ Undo</button>
+                  )}
+                  <button className="ct-undo" onClick={() => setHistoryOpen(true)}>📈 History</button>
+              </div>
+          </div>
         {recent.length === 0 ? (
           <p className="ct-empty">Nothing yet today. Do a chore to charge up.</p>
         ) : (
@@ -441,6 +473,10 @@ function App() {
       {setupOpen && (
         <Setup config={config} onSave={saveConfig} onClose={() => setSetupOpen(false)} />
       )}
+
+        {historyOpen && (
+            <History kid={kid} onClose={() => setHistoryOpen(false)} />
+        )}
     </div>
   );
 }
@@ -594,7 +630,61 @@ function Setup({ config, onSave, onClose }) {
     </div>
   );
 }
+    function History({ kid, onClose }) {
+        const data = gatherHistory(kid.id);
+        const recent = data.slice(-14);
+        const max = Math.max(1, ...recent.map((d) => Math.max(d.earned, d.used)));
+        const now = new Date();
+        const within = (d, n) => (now - new Date(d.date + "T00:00:00")) / 86400000 < n;
+        const last7 = data.filter((d) => within(d, 7));
+        const earned7 = last7.reduce((s, d) => s + d.earned, 0);
+        const used7 = last7.reduce((s, d) => s + d.used, 0);
+        const fmtDate = (s) =>
+            new Date(s + "T00:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 
+        return (
+            <div className="ct-modal" onClick={onClose}>
+                <div className="ct-sheet" onClick={(e) => e.stopPropagation()}>
+                    <div className="ct-sheet-head">
+                        <h2 className="ct-h2">History — {kid.name}</h2>
+                        <button className="ct-x" onClick={onClose}>✕</button>
+                    </div>
+                    <div className="ct-sheet-body">
+                        <div className="ct-tiles">
+                            <div className="ct-tile"><div className="ct-tile-num">{fmt(earned7)}</div><div className="ct-tile-lab">earned · last 7 days</div></div>
+                            <div className="ct-tile"><div className="ct-tile-num">{fmt(used7)}</div><div className="ct-tile-lab">used · last 7 days</div></div>
+                            <div className="ct-tile"><div className="ct-tile-num">{data.length}</div><div className="ct-tile-lab">days tracked</div></div>
+                        </div>
+                        {recent.length === 0 ? (
+                            <p className="ct-empty">No history yet. It fills in as chores and screen time get logged each day.</p>
+                        ) : (
+                            <div className="ct-hlist">
+                                {recent.slice().reverse().map((d) => (
+                                    <div key={d.date} className="ct-hrow">
+                                        <div className="ct-hdate">{fmtDate(d.date)}</div>
+                                        <div className="ct-hbars">
+                                            <div className="ct-hbarwrap">
+                                                <div className="ct-hbar earn" style={{ width: (d.earned / max) * 100 + "%" }} />
+                                                <span className="ct-hnum">+{d.earned}</span>
+                                            </div>
+                                            <div className="ct-hbarwrap">
+                                                <div className="ct-hbar use" style={{ width: (d.used / max) * 100 + "%" }} />
+                                                <span className="ct-hnum">{"\u2212"}{d.used}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        <div className="ct-hlegend">
+                            <span><i className="ct-dot earn" /> earned</span>
+                            <span><i className="ct-dot use" /> used</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 /* ------------------------------------------------------------------ */
 const CSS = `
 .ct-root{
@@ -719,7 +809,25 @@ const CSS = `
 .ct-add{white-space:nowrap;padding:0 16px;border-radius:12px;border:none;background:#2B3040;color:#fff;font-weight:600;font-size:14px;cursor:pointer;}
 .ct-sheet-foot{padding:14px 20px;border-top:1px solid var(--line);}
 .ct-save{width:100%;padding:14px;border-radius:14px;border:none;background:var(--accent,#12B3A6);color:#fff;font-family:Fredoka,sans-serif;font-weight:600;font-size:16px;cursor:pointer;}
-
+.ct-hist-actions{display:flex;gap:8px;}
+.ct-tiles{display:flex;gap:10px;margin:6px 0 16px;}
+.ct-tile{flex:1;background:#F7F8FC;border:1px solid var(--line);border-radius:14px;padding:12px 8px;text-align:center;}
+.ct-tile-num{font-family:Fredoka,sans-serif;font-weight:700;font-size:20px;color:var(--ink);}
+.ct-tile-lab{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.2;}
+.ct-hlist{display:flex;flex-direction:column;}
+.ct-hrow{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid #F1F3FA;}
+.ct-hrow:last-child{border-bottom:none;}
+.ct-hdate{width:96px;flex-shrink:0;font-size:12.5px;color:var(--muted);}
+.ct-hbars{flex:1;display:flex;flex-direction:column;gap:5px;}
+.ct-hbarwrap{display:flex;align-items:center;gap:8px;}
+.ct-hbar{height:12px;border-radius:6px;min-width:2px;transition:width .3s;}
+.ct-hbar.earn{background:var(--accent);}
+.ct-hbar.use{background:#E0567E;}
+.ct-hnum{font-size:11px;color:var(--muted);width:34px;flex-shrink:0;}
+.ct-hlegend{display:flex;gap:16px;justify-content:center;margin-top:14px;font-size:12px;color:var(--muted);}
+.ct-hlegend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle;}
+.ct-dot.earn{background:var(--accent);}
+.ct-dot.use{background:#E0567E;}
 @media (prefers-reduced-motion: reduce){
   .ct-fill,.ct-kid,.ct-chore,.ct-spendbtn,.ct-sheet{transition:none;animation:none;}
   .ct-float{animation-duration:.4s;}
