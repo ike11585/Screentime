@@ -517,6 +517,7 @@ function App() {
 /* ------------------------------------------------------------------ */
 function Setup({ config, onSave, onClose }) {
   const [c, setC] = useState(JSON.parse(JSON.stringify(config)));
+    const [newResp, setNewResp] = useState("");
     const [newRespKid, setNewRespKid] = useState("");    const [newChore, setNewChore] = useState("");
     const [newMin, setNewMin] = useState("");
     const [newPerDay, setNewPerDay] = useState("");
