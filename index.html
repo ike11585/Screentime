@@ -154,7 +154,10 @@ const fmt = (m) => {
   return r ? `${h}h ${r}m` : `${h}h`;
 };
 const uid = () => Math.random().toString(36).slice(2, 8);
-
+const yesterdayKey = () => {
+    const d = new Date(); d.setDate(d.getDate() - 1);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
     /* summarize every stored day for one kid (earned vs used) */
     function gatherHistory(kidId) {
         const prefix = "day:" + kidId + ":";
@@ -274,12 +277,34 @@ function App() {
     setTimeout(() => setFloats((f) => f.filter((x) => x.id !== id)), 950);
   }
 
-  function addEarn(chore) {
-    const entry = { id: uid(), type: "earn", min: chore.min, label: chore.label, ts: Date.now() };
-    saveDay({ ...day, entries: [...day.entries, entry] });
-    if (config.banking) saveBank(bank + chore.min);
-    popFloat(`+${chore.min}m`, true);
-  }
+    function choreLimitState(chore) {
+        if (!chore.perDay && !chore.cooldownH) return { disabled: false, note: "" };
+        const match = (e) => e.type === "earn" && (e.choreId ? e.choreId === chore.id : e.label === chore.label);
+        const todays = day.entries.filter(match);
+        const todayCount = todays.length;
+        let lastTs = todays.reduce((m, e) => Math.max(m, e.ts || 0), 0);
+        if (chore.cooldownH) {
+            const y = store.getJSON(`day:${activeKid}:${yesterdayKey()}`);
+            if (y && y.entries) y.entries.filter(match).forEach((e) => { if ((e.ts || 0) > lastTs) lastTs = e.ts; });
+        }
+        if (chore.perDay && todayCount >= chore.perDay)
+            return { disabled: true, note: `${todayCount}/${chore.perDay} today` };
+        if (chore.cooldownH && lastTs) {
+            const nextOk = lastTs + chore.cooldownH * 3600000;
+            if (Date.now() < nextOk)
+                return { disabled: true, note: `again in ${fmt(Math.ceil((nextOk - Date.now()) / 60000))}` };
+        }
+        if (chore.perDay) return { disabled: false, note: `${todayCount}/${chore.perDay} today` };
+        return { disabled: false, note: `every ${chore.cooldownH}h` };
+    }
+
+    function addEarn(chore) {
+        if (choreLimitState(chore).disabled) return;
+        const entry = { id: uid(), type: "earn", min: chore.min, label: chore.label, choreId: chore.id, ts: Date.now() };
+        saveDay({ ...day, entries: [...day.entries, entry] });
+        if (config.banking) saveBank(bank + chore.min);
+        popFloat(`+${chore.min}m`, true);
+    }
 
   function spend(min) {
     if (locked || min <= 0 || min > remaining) return;
@@ -389,12 +414,16 @@ function App() {
       <section className="ct-card">
         <h2 className="ct-h2">Earn more time</h2>
         <div className="ct-chores">
-          {config.chores.map((c) => (
-            <button key={c.id} className="ct-chore" onClick={() => addEarn(c)}>
-              <span className="ct-chore-label">{c.label}</span>
-              <span className="ct-chore-min">+{c.min}m</span>
-            </button>
-          ))}
+            {config.chores.map((c) => {
+                const lim = choreLimitState(c);
+                return (
+                    <button key={c.id} className={"ct-chore" + (lim.disabled ? " disabled" : "")} disabled={lim.disabled} onClick={() => addEarn(c)}>
+                        <span className="ct-chore-label">{c.label}</span>
+                        <span className="ct-chore-min">+{c.min}m</span>
+                        {lim.note && <span className="ct-chore-lim">{lim.note}</span>}
+                    </button>
+                );
+            })}
           {config.chores.length === 0 && (
             <p className="ct-empty">No chores set. Add some in Set up.</p>
           )}
@@ -485,8 +514,10 @@ function App() {
 function Setup({ config, onSave, onClose }) {
   const [c, setC] = useState(JSON.parse(JSON.stringify(config)));
   const [newResp, setNewResp] = useState("");
-  const [newChore, setNewChore] = useState("");
-  const [newMin, setNewMin] = useState("");
+    const [newChore, setNewChore] = useState("");
+    const [newMin, setNewMin] = useState("");
+    const [newPerDay, setNewPerDay] = useState("");
+    const [newCooldown, setNewCooldown] = useState("");
 
   const up = (patch) => setC((prev) => ({ ...prev, ...patch }));
 
@@ -500,13 +531,17 @@ function Setup({ config, onSave, onClose }) {
     setNewResp("");
   }
   function delResp(id) { up({ responsibilities: c.responsibilities.filter((r) => r.id !== id) }); }
-  function addChore() {
-    const m = parseInt(newMin, 10);
-    if (!newChore.trim() || !m || m <= 0) return;
-    up({ chores: [...c.chores, { id: uid(), label: newChore.trim(), min: m }] });
-    setNewChore("");
-    setNewMin("");
-  }
+    function addChore() {
+        const m = parseInt(newMin, 10);
+        if (!newChore.trim() || !m || m <= 0) return;
+        const chore = { id: uid(), label: newChore.trim(), min: m };
+        const pd = parseInt(newPerDay, 10);
+        const cd = parseInt(newCooldown, 10);
+        if (pd > 0) chore.perDay = pd;
+        if (cd > 0) chore.cooldownH = cd;
+        up({ chores: [...c.chores, chore] });
+        setNewChore(""); setNewMin(""); setNewPerDay(""); setNewCooldown("");
+    }
   function delChore(id) { up({ chores: c.chores.filter((x) => x.id !== id) }); }
   function save() { onSave(c); onClose(); }
 
@@ -598,29 +633,27 @@ function Setup({ config, onSave, onClose }) {
           </div>
 
           <h3 className="ct-h3">Earning chores</h3>
-          {c.chores.map((x) => (
-            <div key={x.id} className="ct-editrow">
-              <span>{x.label}</span>
-              <span className="ct-editmin">+{x.min}m</span>
-              <button className="ct-del" onClick={() => delChore(x.id)}>✕</button>
+            {c.chores.map((x) => (
+                <div key={x.id} className="ct-editrow">
+                    <span>{x.label}</span>
+                    {(x.perDay || x.cooldownH) && (
+                        <span className="ct-limbadge">
+                  {x.perDay ? `${x.perDay}/day` : ""}{x.perDay && x.cooldownH ? " · " : ""}{x.cooldownH ? `every ${x.cooldownH}h` : ""}
+                </span>
+                    )}
+                    <span className="ct-editmin">+{x.min}m</span>
+                    <button className="ct-del" onClick={() => delChore(x.id)}>✕</button>
+                </div>
+            ))}
+            <div className="ct-addrow">
+                <input className="ct-input full" placeholder="Add a chore" value={newChore} onChange={(e) => setNewChore(e.target.value)} />
+                <input className="ct-input mins" type="number" placeholder="min" value={newMin} onChange={(e) => setNewMin(e.target.value)} />
+                <button className="ct-add" onClick={addChore}>Add</button>
             </div>
-          ))}
-          <div className="ct-addrow">
-            <input
-              className="ct-input full"
-              placeholder="Add a chore"
-              value={newChore}
-              onChange={(e) => setNewChore(e.target.value)}
-            />
-            <input
-              className="ct-input mins"
-              type="number"
-              placeholder="min"
-              value={newMin}
-              onChange={(e) => setNewMin(e.target.value)}
-            />
-            <button className="ct-add" onClick={addChore}>Add</button>
-          </div>
+            <div className="ct-addrow ct-limitrow">
+                <input className="ct-input" type="number" placeholder="max ×/day (optional)" value={newPerDay} onChange={(e) => setNewPerDay(e.target.value)} />
+                <input className="ct-input" type="number" placeholder="every N hours (optional)" value={newCooldown} onChange={(e) => setNewCooldown(e.target.value)} />
+            </div>
         </div>
 
         <div className="ct-sheet-foot">
@@ -749,6 +782,11 @@ const CSS = `
 .ct-chore:active{transform:scale(.96);}
 .ct-chore-label{font-size:13.5px;line-height:1.25;color:var(--ink);}
 .ct-chore-min{font-family:Fredoka,sans-serif;font-weight:600;font-size:15px;color:var(--accent);}
+.ct-chore.disabled{opacity:.5;cursor:not-allowed;}
+.ct-chore-lim{font-size:11px;color:var(--muted);margin-top:2px;}
+.ct-chore.disabled .ct-chore-lim{color:#C3496B;}
+.ct-limitrow{margin-top:8px;}
+.ct-limbadge{font-size:11px;color:var(--muted);background:#F1F3FA;border-radius:999px;padding:2px 8px;white-space:nowrap;}
 
 .ct-spend{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:10px;}
 .ct-spendbtn{padding:14px 0;border-radius:14px;border:none;background:var(--accent);color:#fff;font-family:Fredoka,sans-serif;font-weight:600;font-size:16px;cursor:pointer;transition:transform .1s,opacity .12s;}
