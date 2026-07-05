@@ -255,9 +255,10 @@ function App() {
   const cap = isWeekend() ? config.caps.weekend : config.caps.school;
   const earnedToday = day.entries.filter((e) => e.type === "earn").reduce((s, e) => s + e.min, 0);
   const spentToday = day.entries.filter((e) => e.type === "spend").reduce((s, e) => s + e.min, 0);
-  const allRespDone =
-    config.responsibilities.length > 0 &&
-    config.responsibilities.every((r) => day.respDone[r.id]);
+    const myResps = config.responsibilities.filter((r) => !r.kidId || r.kidId === activeKid);
+    const allRespDone =
+        myResps.length > 0 &&
+        myResps.every((r) => day.respDone[r.id]);
   const locked = !allRespDone;
 
   let remaining, capUsedLabel;
@@ -395,16 +396,19 @@ function App() {
       <section className="ct-card">
         <h2 className="ct-h2">Today's must-dos <span className="ct-hint">unlocks your time</span></h2>
         <div className="ct-resp">
-          {config.responsibilities.map((r) => (
-            <button
-              key={r.id}
-              className={"ct-check" + (day.respDone[r.id] ? " done" : "")}
-              onClick={() => toggleResp(r.id)}
-            >
-              <span className="ct-box">{day.respDone[r.id] ? "✓" : ""}</span>
-              {r.label}
-            </button>
-          ))}
+            {myResps.map((r) => (
+                <button
+                    key={r.id}
+                    className={"ct-check" + (day.respDone[r.id] ? " done" : "")}
+                    onClick={() => toggleResp(r.id)}
+                >
+                    <span className="ct-box">{day.respDone[r.id] ? "✓" : ""}</span>
+                    {r.label}
+                </button>
+            ))}
+            {myResps.length === 0 && (
+                <p className="ct-empty">No must-dos set. Add some in Set up.</p>
+            )}
           {config.responsibilities.length === 0 && (
             <p className="ct-empty">No must-dos set. Add some in Set up.</p>
           )}
@@ -513,8 +517,7 @@ function App() {
 /* ------------------------------------------------------------------ */
 function Setup({ config, onSave, onClose }) {
   const [c, setC] = useState(JSON.parse(JSON.stringify(config)));
-  const [newResp, setNewResp] = useState("");
-    const [newChore, setNewChore] = useState("");
+    const [newRespKid, setNewRespKid] = useState("");    const [newChore, setNewChore] = useState("");
     const [newMin, setNewMin] = useState("");
     const [newPerDay, setNewPerDay] = useState("");
     const [newCooldown, setNewCooldown] = useState("");
@@ -525,11 +528,16 @@ function Setup({ config, onSave, onClose }) {
     const kids = c.kids.map((k, idx) => (idx === i ? { ...k, ...patch } : k));
     up({ kids });
   }
-  function addResp() {
-    if (!newResp.trim()) return;
-    up({ responsibilities: [...c.responsibilities, { id: uid(), label: newResp.trim() }] });
-    setNewResp("");
-  }
+    function setRespKid(id, kidId) {
+        up({ responsibilities: c.responsibilities.map((r) => (r.id === id ? { ...r, kidId: kidId || undefined } : r)) });
+    }
+    function addResp() {
+        if (!newResp.trim()) return;
+        const r = { id: uid(), label: newResp.trim() };
+        if (newRespKid) r.kidId = newRespKid;
+        up({ responsibilities: [...c.responsibilities, r] });
+        setNewResp(""); setNewRespKid("");
+    }
   function delResp(id) { up({ responsibilities: c.responsibilities.filter((r) => r.id !== id) }); }
     function addChore() {
         const m = parseInt(newMin, 10);
@@ -615,22 +623,30 @@ function Setup({ config, onSave, onClose }) {
           </p>
 
           <h3 className="ct-h3">Must-dos (unlock spending)</h3>
-          {c.responsibilities.map((r) => (
-            <div key={r.id} className="ct-editrow">
-              <span>{r.label}</span>
-              <button className="ct-del" onClick={() => delResp(r.id)}>✕</button>
+            {c.responsibilities.map((r) => (
+                <div key={r.id} className="ct-editrow">
+                    <span>{r.label}</span>
+                    <select className="ct-who" value={r.kidId || ""} onChange={(e) => setRespKid(r.id, e.target.value)}>
+                        <option value="">Everyone</option>
+                        {c.kids.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+                    </select>
+                    <button className="ct-del" onClick={() => delResp(r.id)}>✕</button>
+                </div>
+            ))}
+            <div className="ct-addrow">
+                <input
+                    className="ct-input full"
+                    placeholder="Add a must-do"
+                    value={newResp}
+                    onChange={(e) => setNewResp(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addResp()}
+                />
+                <select className="ct-who" value={newRespKid} onChange={(e) => setNewRespKid(e.target.value)}>
+                    <option value="">Everyone</option>
+                    {c.kids.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+                </select>
+                <button className="ct-add" onClick={addResp}>Add</button>
             </div>
-          ))}
-          <div className="ct-addrow">
-            <input
-              className="ct-input full"
-              placeholder="Add a must-do"
-              value={newResp}
-              onChange={(e) => setNewResp(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addResp()}
-            />
-            <button className="ct-add" onClick={addResp}>Add</button>
-          </div>
 
           <h3 className="ct-h3">Earning chores</h3>
             {c.chores.map((x) => (
@@ -843,6 +859,7 @@ const CSS = `
 .ct-editrow span:first-child{flex:1;}
 .ct-editmin{font-family:Fredoka,sans-serif;font-weight:600;color:var(--muted);}
 .ct-del{background:none;border:none;color:#C3496B;font-size:14px;cursor:pointer;padding:2px 6px;}
+.ct-who{border:1px solid var(--line);border-radius:10px;padding:6px 8px;font-size:12.5px;font-family:Inter,sans-serif;color:var(--ink);background:#fff;max-width:120px;}
 .ct-addrow{display:flex;gap:8px;margin-top:10px;}
 .ct-add{white-space:nowrap;padding:0 16px;border-radius:12px;border:none;background:#2B3040;color:#fff;font-weight:600;font-size:14px;cursor:pointer;}
 .ct-sheet-foot{padding:14px 20px;border-top:1px solid var(--line);}
