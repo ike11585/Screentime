@@ -181,7 +181,7 @@ const yesterdayKey = () => {
             const entries = (days[date] && days[date].entries) || [];
             const earned = entries.filter((e) => e.type === "earn").reduce((s, e) => s + e.min, 0);
             const used = entries.filter((e) => e.type === "spend").reduce((s, e) => s + e.min, 0);
-            return { date, earned, used };
+            return { date, earned, used, entries };
         });
     }
 
@@ -552,7 +552,7 @@ function App() {
       )}
 
         {historyOpen && (
-            <History kid={kid} onClose={() => setHistoryOpen(false)} />
+            <History kid={kid} admin={admin} onClose={() => setHistoryOpen(false)} />
         )}
     </div>
   );
@@ -724,7 +724,7 @@ function Setup({ config, onSave, onClose }) {
     </div>
   );
 }
-    function History({ kid, onClose }) {
+    function History({ kid, admin, onClose }) {
         const data = gatherHistory(kid.id);
         const recent = data.slice(-14);
         const max = Math.max(1, ...recent.map((d) => Math.max(d.earned, d.used)));
@@ -733,8 +733,10 @@ function Setup({ config, onSave, onClose }) {
         const last7 = data.filter((d) => within(d, 7));
         const earned7 = last7.reduce((s, d) => s + d.earned, 0);
         const used7 = last7.reduce((s, d) => s + d.used, 0);
+        const [open, setOpen] = useState(null);
         const fmtDate = (s) =>
             new Date(s + "T00:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+        const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
         return (
             <div className="ct-modal" onClick={onClose}>
@@ -749,23 +751,46 @@ function Setup({ config, onSave, onClose }) {
                             <div className="ct-tile"><div className="ct-tile-num">{fmt(used7)}</div><div className="ct-tile-lab">used · last 7 days</div></div>
                             <div className="ct-tile"><div className="ct-tile-num">{data.length}</div><div className="ct-tile-lab">days tracked</div></div>
                         </div>
+                        {admin && recent.length > 0 && <p className="ct-note">Tap a day to see its individual items.</p>}
                         {recent.length === 0 ? (
                             <p className="ct-empty">No history yet. It fills in as chores and screen time get logged each day.</p>
                         ) : (
                             <div className="ct-hlist">
                                 {recent.slice().reverse().map((d) => (
-                                    <div key={d.date} className="ct-hrow">
-                                        <div className="ct-hdate">{fmtDate(d.date)}</div>
-                                        <div className="ct-hbars">
-                                            <div className="ct-hbarwrap">
-                                                <div className="ct-hbar earn" style={{ width: (d.earned / max) * 100 + "%" }} />
-                                                <span className="ct-hnum">+{d.earned}</span>
-                                            </div>
-                                            <div className="ct-hbarwrap">
-                                                <div className="ct-hbar use" style={{ width: (d.used / max) * 100 + "%" }} />
-                                                <span className="ct-hnum">{"\u2212"}{d.used}</span>
+                                    <div key={d.date} className="ct-hday">
+                                        <div
+                                            className={"ct-hrow" + (admin ? " tappable" : "")}
+                                            onClick={admin ? () => setOpen(open === d.date ? null : d.date) : undefined}
+                                        >
+                                            {admin && <span className="ct-hcaret">{open === d.date ? "▾" : "▸"}</span>}
+                                            <div className="ct-hdate">{fmtDate(d.date)}</div>
+                                            <div className="ct-hbars">
+                                                <div className="ct-hbarwrap">
+                                                    <div className="ct-hbar earn" style={{ width: (d.earned / max) * 100 + "%" }} />
+                                                    <span className="ct-hnum">+{d.earned}</span>
+                                                </div>
+                                                <div className="ct-hbarwrap">
+                                                    <div className="ct-hbar use" style={{ width: (d.used / max) * 100 + "%" }} />
+                                                    <span className="ct-hnum">{"\u2212"}{d.used}</span>
+                                                </div>
                                             </div>
                                         </div>
+                                        {admin && open === d.date && (
+                                            <div className="ct-hitems">
+                                                {(!d.entries || d.entries.length === 0) ? (
+                                                    <p className="ct-empty">No items logged this day.</p>
+                                                ) : (
+                                                    d.entries.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)).map((e, idx) => (
+                                                        <div key={e.id || idx} className="ct-hitem">
+                                                            <span className="ct-logdot" data-t={e.type} />
+                                                            <span className="ct-hitem-label">{e.label}</span>
+                                                            <span className={"ct-logmin " + e.type}>{e.type === "earn" ? "+" : "\u2212"}{e.min}m</span>
+                                                            <span className="ct-logtime">{fmtTime(e.ts)}</span>
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 ))}
                             </div>
@@ -930,6 +955,16 @@ const CSS = `
 .ct-hlegend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle;}
 .ct-dot.earn{background:var(--accent);}
 .ct-dot.use{background:#E0567E;}
+.ct-hday{border-bottom:1px solid #F1F3FA;}
+.ct-hday:last-child{border-bottom:none;}
+.ct-hlist .ct-hrow{border-bottom:none;}
+.ct-hrow.tappable{cursor:pointer;border-radius:8px;}
+.ct-hrow.tappable:hover{background:#F7F8FC;}
+.ct-hcaret{width:14px;flex-shrink:0;color:var(--muted);font-size:11px;}
+.ct-hitems{padding:2px 0 10px 26px;}
+.ct-hitem{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:13.5px;border-bottom:1px solid #F5F6FA;}
+.ct-hitem:last-child{border-bottom:none;}
+.ct-hitem-label{flex:1;}
 @media (prefers-reduced-motion: reduce){
   .ct-fill,.ct-kid,.ct-chore,.ct-spendbtn,.ct-sheet{transition:none;animation:none;}
   .ct-float{animation-duration:.4s;}
