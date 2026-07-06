@@ -197,8 +197,8 @@ function App() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [floats, setFloats] = useState([]);
-  const [customSpend, setCustomSpend] = useState("");
-  const [syncState, setSyncState] = useState(SYNC_ENABLED ? "connecting" : "off");
+    const [customSpend, setCustomSpend] = useState("");
+    const [parentLog, setParentLog] = useState("");  const [syncState, setSyncState] = useState(SYNC_ENABLED ? "connecting" : "off");
   const [tick, setTick] = useState(0);
     const [admin, setAdmin] = useState(false);
     const floatId = useRef(0);
@@ -315,6 +315,15 @@ function App() {
     popFloat(`\u2212${min}m`, false);
     setCustomSpend("");
   }
+
+    function parentSpend(min) {
+        if (!min || min <= 0) return;
+        const entry = { id: uid(), type: "spend", min, label: "Logged by parent", ts: Date.now() };
+        saveDay({ ...day, entries: [...day.entries, entry] });
+        if (config.banking) saveBank(bank - min);
+        popFloat(`\u2212${min}m`, false);
+        setParentLog("");
+    }
 
   function toggleResp(id) {
     saveDay({ ...day, respDone: { ...day.respDone, [id]: !day.respDone[id] } });
@@ -458,19 +467,42 @@ function App() {
             value={customSpend}
             onChange={(e) => setCustomSpend(e.target.value)}
           />
-          <button
-            className="ct-usebtn"
-            disabled={
-              locked ||
-              !customSpend ||
-              parseInt(customSpend, 10) <= 0 ||
-              parseInt(customSpend, 10) > remaining
-            }
-            onClick={() => spend(parseInt(customSpend, 10))}
-          >
-            Use it
-          </button>
+            <button
+                className="ct-usebtn"
+                disabled={
+                    locked ||
+                    !customSpend ||
+                    parseInt(customSpend, 10) <= 0 ||
+                    parseInt(customSpend, 10) > remaining
+                }
+                onClick={() => spend(parseInt(customSpend, 10))}
+            >
+                Use it
+            </button>
         </div>
+          {admin && (
+              <div className="ct-parentlog">
+                  <div className="ct-parentlog-label">Parent: log time already used (ignores cap & lock)</div>
+                  <div className="ct-custom">
+                      <input
+                          className="ct-input"
+                          type="number"
+                          min="1"
+                          inputMode="numeric"
+                          placeholder="Minutes"
+                          value={parentLog}
+                          onChange={(e) => setParentLog(e.target.value)}
+                      />
+                      <button
+                          className="ct-usebtn"
+                          disabled={!parentLog || parseInt(parentLog, 10) <= 0}
+                          onClick={() => parentSpend(parseInt(parentLog, 10))}
+                      >
+                          Log it
+                      </button>
+                  </div>
+              </div>
+          )}
       </section>
 
       <section className="ct-card">
@@ -814,7 +846,8 @@ const CSS = `
 .ct-input:focus{outline:2px solid var(--accent);outline-offset:1px;}
 .ct-usebtn{white-space:nowrap;padding:0 20px;border-radius:12px;border:none;background:#2B3040;color:#fff;font-weight:600;font-size:15px;cursor:pointer;}
 .ct-usebtn:disabled{background:#DDE1EC;color:#A5ADBF;cursor:not-allowed;}
-
+.ct-parentlog{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line);}
+.ct-parentlog-label{font-size:12px;color:var(--muted);margin-bottom:8px;}
 .ct-hist-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
 .ct-hist-head .ct-h2{margin:0;}
 .ct-undo{background:none;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer;color:var(--muted);}
