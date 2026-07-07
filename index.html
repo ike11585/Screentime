@@ -153,6 +153,14 @@ const fmt = (m) => {
   const r = m % 60;
   return r ? `${h}h ${r}m` : `${h}h`;
 };
+/* cooldown label: hours up to 24, decimal days above (36h -> "every 1.5 days") */
+const fmtCooldown = (h) => {
+  if (h > 24) {
+    const days = Math.round((h / 24) * 100) / 100; // trims to 2 decimals, no trailing zeros
+    return `every ${days} ${days === 1 ? "day" : "days"}`;
+  }
+  return `every ${h}h`;
+};
 const uid = () => Math.random().toString(36).slice(2, 8);
 const yesterdayKey = () => {
     const d = new Date(); d.setDate(d.getDate() - 1);
@@ -296,7 +304,7 @@ function App() {
                 return { disabled: true, note: `again in ${fmt(Math.ceil((nextOk - Date.now()) / 60000))}` };
         }
         if (chore.perDay) return { disabled: false, note: `${todayCount}/${chore.perDay} today` };
-        return { disabled: false, note: `every ${chore.cooldownH}h` };
+        return { disabled: false, note: fmtCooldown(chore.cooldownH) };
     }
 
     function addEarn(chore) {
@@ -566,6 +574,7 @@ function Setup({ config, onSave, onClose }) {
     const [newMin, setNewMin] = useState("");
     const [newPerDay, setNewPerDay] = useState("");
     const [newCooldown, setNewCooldown] = useState("");
+    const [editingChore, setEditingChore] = useState(null);
 
   const up = (patch) => setC((prev) => ({ ...prev, ...patch }));
 
@@ -596,6 +605,16 @@ function Setup({ config, onSave, onClose }) {
         setNewChore(""); setNewMin(""); setNewPerDay(""); setNewCooldown("");
     }
   function delChore(id) { up({ chores: c.chores.filter((x) => x.id !== id) }); }
+    function setChore(id, patch) {
+        up({ chores: c.chores.map((x) => {
+            if (x.id !== id) return x;
+            const next = { ...x, ...patch };
+            // keep optional limits absent rather than undefined/0 (Firebase rejects undefined)
+            if (!next.perDay || next.perDay <= 0) delete next.perDay;
+            if (!next.cooldownH || next.cooldownH <= 0) delete next.cooldownH;
+            return next;
+        }) });
+    }
   function save() { onSave(c); onClose(); }
 
   return (
@@ -695,16 +714,57 @@ function Setup({ config, onSave, onClose }) {
 
           <h3 className="ct-h3">Earning chores</h3>
             {c.chores.map((x) => (
-                <div key={x.id} className="ct-editrow">
-                    <span>{x.label}</span>
-                    {(x.perDay || x.cooldownH) && (
-                        <span className="ct-limbadge">
-                  {x.perDay ? `${x.perDay}/day` : ""}{x.perDay && x.cooldownH ? " · " : ""}{x.cooldownH ? `every ${x.cooldownH}h` : ""}
+                editingChore === x.id ? (
+                    <div key={x.id} className="ct-choreedit">
+                        <div className="ct-addrow">
+                            <input
+                                className="ct-input full"
+                                placeholder="Chore name"
+                                value={x.label}
+                                onChange={(e) => setChore(x.id, { label: e.target.value })}
+                            />
+                            <input
+                                className="ct-input mins"
+                                type="number"
+                                placeholder="min"
+                                value={x.min}
+                                onChange={(e) => setChore(x.id, { min: parseInt(e.target.value, 10) || 0 })}
+                            />
+                        </div>
+                        <div className="ct-addrow ct-limitrow">
+                            <input
+                                className="ct-input"
+                                type="number"
+                                placeholder="max ×/day (optional)"
+                                value={x.perDay || ""}
+                                onChange={(e) => setChore(x.id, { perDay: parseInt(e.target.value, 10) })}
+                            />
+                            <input
+                                className="ct-input"
+                                type="number"
+                                placeholder="every N hours (optional)"
+                                value={x.cooldownH || ""}
+                                onChange={(e) => setChore(x.id, { cooldownH: parseInt(e.target.value, 10) })}
+                            />
+                        </div>
+                        <div className="ct-editactions">
+                            <button className="ct-del" onClick={() => { delChore(x.id); setEditingChore(null); }}>Delete</button>
+                            <button className="ct-add" onClick={() => setEditingChore(null)}>Done</button>
+                        </div>
+                    </div>
+                ) : (
+                    <div key={x.id} className="ct-editrow">
+                        <span>{x.label}</span>
+                        {(x.perDay || x.cooldownH) && (
+                            <span className="ct-limbadge">
+                  {x.perDay ? `${x.perDay}/day` : ""}{x.perDay && x.cooldownH ? " · " : ""}{x.cooldownH ? fmtCooldown(x.cooldownH) : ""}
                 </span>
-                    )}
-                    <span className="ct-editmin">+{x.min}m</span>
-                    <button className="ct-del" onClick={() => delChore(x.id)}>✕</button>
-                </div>
+                        )}
+                        <span className="ct-editmin">+{x.min}m</span>
+                        <button className="ct-edit" title="Edit chore" onClick={() => setEditingChore(x.id)}>✎</button>
+                        <button className="ct-del" onClick={() => delChore(x.id)}>✕</button>
+                    </div>
+                )
             ))}
             <div className="ct-addrow">
                 <input className="ct-input full" placeholder="Add a chore" value={newChore} onChange={(e) => setNewChore(e.target.value)} />
@@ -931,6 +991,13 @@ const CSS = `
 .ct-editrow span:first-child{flex:1;}
 .ct-editmin{font-family:Fredoka,sans-serif;font-weight:600;color:var(--muted);}
 .ct-del{background:none;border:none;color:#C3496B;font-size:14px;cursor:pointer;padding:2px 6px;}
+.ct-edit{background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:2px 6px;}
+.ct-edit:hover{color:var(--ink);}
+.ct-choreedit{background:#F7F8FC;border:1px solid var(--line);border-radius:14px;padding:12px;margin:8px 0;display:flex;flex-direction:column;gap:8px;}
+.ct-choreedit .ct-addrow{margin-top:0;}
+.ct-editactions{display:flex;gap:8px;justify-content:flex-end;align-items:center;}
+.ct-editactions .ct-del{border:1px solid var(--line);border-radius:12px;padding:8px 14px;}
+.ct-editactions .ct-add{padding:8px 18px;}
 .ct-who{border:1px solid var(--line);border-radius:10px;padding:6px 8px;font-size:12.5px;font-family:Inter,sans-serif;color:var(--ink);background:#fff;max-width:120px;}
 .ct-addrow{display:flex;gap:8px;margin-top:10px;}
 .ct-add{white-space:nowrap;padding:0 16px;border-radius:12px;border:none;background:#2B3040;color:#fff;font-weight:600;font-size:14px;cursor:pointer;}
